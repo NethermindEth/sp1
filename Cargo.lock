@@ -6844,7 +6844,6 @@ name = "sp1-cuda"
 version = "3.0.0-rc3"
 dependencies = [
  "bincode",
- "ctrlc",
  "prost",
  "prost-build",
  "serde",
