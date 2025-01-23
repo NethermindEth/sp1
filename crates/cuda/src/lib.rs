@@ -172,8 +172,6 @@ impl SP1CudaProver {
             .unwrap_or_else(|_| "public.ecr.aws/succinct-labs/moongate:v4.1.0".to_string());
 
         let cleaned_up = Arc::new(AtomicBool::new(false));
-        let cleanup_name = container_name;
-        let cleanup_flag = cleaned_up.clone();
 
         // Check if Docker is available and the user has necessary permissions
         if !Self::check_docker_availability()? {
@@ -206,17 +204,6 @@ impl SP1CudaProver {
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| format!("Failed to start Docker container: {}. Please check your Docker installation and permissions.", e))?;
-
-        // Kill the container on control-c
-        ctrlc::set_handler(move || {
-            tracing::debug!("received Ctrl+C, cleaning up...");
-            if !cleanup_flag.load(Ordering::SeqCst) {
-                cleanup_container(cleanup_name);
-                cleanup_flag.store(true, Ordering::SeqCst);
-            }
-            std::process::exit(0);
-        })
-        .unwrap();
 
         // Wait a few seconds for the container to start
         std::thread::sleep(Duration::from_secs(2));
