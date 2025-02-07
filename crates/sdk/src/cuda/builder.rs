@@ -9,9 +9,24 @@ use super::CudaProver;
 /// A builder for the [`CudaProver`].
 ///
 /// The builder is used to configure the [`CudaProver`] before it is built.
-pub struct CudaProverBuilder;
+pub struct CudaProverBuilder {
+    gpu_number: Option<u32>,
+}
 
 impl CudaProverBuilder {
+    /// Create default CudaProverBuilder
+    pub fn new() -> Self {
+        CudaProverBuilder {
+            gpu_number: None,
+        }
+    }
+
+    /// Set the GPU flag for Docker run.
+    pub fn with_gpu_number(mut self, flag: u32) -> Self {
+        self.gpu_number = Some(flag);
+        self
+    }
+
     /// Builds a [`CudaProver`].
     ///
     /// # Details
@@ -26,6 +41,6 @@ impl CudaProverBuilder {
     /// ```
     #[must_use]
     pub fn build(self) -> CudaProver {
-        CudaProver::new(SP1Prover::new())
+        CudaProver::new(SP1Prover::new(), self.gpu_number)
     }
 }

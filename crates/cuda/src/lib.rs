@@ -104,8 +104,16 @@ pub struct WrapRequestPayload {
 impl SP1CudaProver {
     /// Creates a new [SP1Prover] that runs inside a Docker container and returns a
     /// [SP1ProverClient] that can be used to communicate with the container.
-    pub fn new() -> Result<Self, Box<dyn StdError>> {
-        let container_name = "sp1-gpu";
+    pub fn new(gpu_number: Option<u32>) -> Result<Self, Box<dyn StdError>> {
+        let gpu_flag = gpu_number
+            .map_or("all".to_string(), |gpu| format!("device={}",gpu.to_string()));
+
+        let port_number = gpu_number.map_or(3000, |gpu| 3000 + gpu);
+        let port_flag = format!("{}:3000", port_number);
+
+        let container_name = gpu_number
+            .map_or("sp1-gpu".to_string(), |gpu| format!("sp1-gpu-{}", gpu));
+
         let image_name = std::env::var("SP1_GPU_IMAGE")
             .unwrap_or_else(|_| "public.ecr.aws/succinct-labs/moongate:v4.0.0".to_string());
 
@@ -129,12 +137,12 @@ impl SP1CudaProver {
                 "-e",
                 &format!("RUST_LOG={}", rust_log_level),
                 "-p",
-                "3000:3000",
+                &port_flag,
                 "--rm",
                 "--gpus",
-                "all",
+                &gpu_flag,
                 "--name",
-                container_name,
+                &container_name,
                 &image_name,
             ])
             .stdout(Stdio::piped())
@@ -177,9 +185,10 @@ impl SP1CudaProver {
         // Wait a few seconds for the container to start
         std::thread::sleep(Duration::from_secs(2));
 
+        let url = format!("http://localhost:{}/twirp/",port_number);
         // Check if the container is ready
         let client = Client::from_base_url(
-            Url::parse("http://localhost:3000/twirp/").expect("failed to parse url"),
+            Url::parse(&url).expect("failed to parse url"),
         )
         .expect("failed to create client");
 
@@ -211,8 +220,9 @@ impl SP1CudaProver {
             Ok(())
         })?;
 
+        let url = format!("http://localhost:{}/twirp/",port_number);
         let client = Client::new(
-            Url::parse("http://localhost:3000/twirp/").expect("failed to parse url"),
+            Url::parse(&url).expect("failed to parse url"),
             reqwest::Client::new(),
             vec![Box::new(LoggingMiddleware) as Box<dyn Middleware>],
         )
@@ -307,7 +317,7 @@ impl SP1CudaProver {
 
 impl Default for SP1CudaProver {
     fn default() -> Self {
-        Self::new().expect("Failed to create SP1CudaProver")
+        Self::new(None).expect("Failed to create SP1CudaProver")
     }
 }
 
