@@ -108,7 +108,10 @@ pub struct WrapRequestPayload {
 impl SP1CudaProver {
     /// Creates a new [SP1CudaProver] that can be used to communicate with the Moongate server at
     /// `moongate_endpoint`, or if not provided, create one that runs inside a Docker container.
-    pub fn new(moongate_endpoint: Option<String>) -> Result<Self, Box<dyn StdError>> {
+    pub fn new(
+        moongate_endpoint: Option<String>,
+        gpu_number: Option<u32>,
+    ) -> Result<Self, Box<dyn StdError>> {
         let reqwest_middlewares = vec![Box::new(LoggingMiddleware) as Box<dyn Middleware>];
 
         let prover = match moongate_endpoint {
@@ -122,7 +125,7 @@ impl SP1CudaProver {
 
                 SP1CudaProver { client, managed_container: None }
             }
-            None => Self::start_moongate_server(reqwest_middlewares)?,
+            None => Self::start_moongate_server(gpu_number, reqwest_middlewares)?,
         };
 
         let timeout = Duration::from_secs(300);
@@ -164,10 +167,19 @@ impl SP1CudaProver {
     }
 
     fn start_moongate_server(
+        gpu_number: Option<u32>,
         reqwest_middlewares: Vec<Box<dyn Middleware>>,
     ) -> Result<SP1CudaProver, Box<dyn StdError>> {
         // If the moongate endpoint url hasn't been provided, we start the Docker container
-        let container_name = "sp1-gpu";
+
+        let gpu_flag = gpu_number.map_or("all".to_string(), |gpu| format!("device={}", gpu));
+
+        let port_number = gpu_number.map_or(3000, |gpu| 3000 + gpu);
+        let port_flag = format!("{}:3000", port_number);
+
+        let container_name =
+            gpu_number.map_or("sp1-gpu".to_string(), |gpu| format!("sp1-gpu-{}", gpu));
+
         let image_name = std::env::var("SP1_GPU_IMAGE")
             .unwrap_or_else(|_| "public.ecr.aws/succinct-labs/moongate:v4.1.0".to_string());
 
@@ -191,12 +203,12 @@ impl SP1CudaProver {
                 "-e",
                 &format!("RUST_LOG={}", rust_log_level),
                 "-p",
-                "3000:3000",
+                &port_flag,
                 "--rm",
                 "--gpus",
-                "all",
+                &gpu_flag,
                 "--name",
-                container_name,
+                &container_name,
                 &image_name,
             ])
             // Redirect stdout and stderr to the parent process
@@ -208,8 +220,10 @@ impl SP1CudaProver {
         // Wait a few seconds for the container to start
         std::thread::sleep(Duration::from_secs(2));
 
+        let url = format!("http://localhost:{}/twirp/", port_number);
+
         let client = Client::new(
-            Url::parse("http://localhost:3000/twirp/").expect("failed to parse url"),
+            Url::parse(&url).expect("failed to parse url"),
             reqwest::Client::new(),
             reqwest_middlewares,
         )
@@ -299,7 +313,7 @@ impl SP1CudaProver {
 
 impl Default for SP1CudaProver {
     fn default() -> Self {
-        Self::new(None).expect("Failed to create SP1CudaProver")
+        Self::new(None, None).expect("Failed to create SP1CudaProver")
     }
 }
 
