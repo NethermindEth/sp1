@@ -278,8 +278,15 @@ impl SP1CudaProver {
         F: Future<Output = Result<R, twirp::ClientError>> + Send,
         R: Send,
     {
+        let stop_flag = Arc::new(AtomicBool::new(false));
+
+        let health_stop_flag = stop_flag.clone();
         let health_check_task = tokio::spawn(async move {
             loop {
+                if health_stop_flag.load(Ordering::Relaxed) {
+                    break;
+                }
+
                 match Self::moongate_container_healthcheck(container_name.clone()) {
                     Ok(true) => {
                         // Health is good, continue checking
@@ -303,6 +310,7 @@ impl SP1CudaProver {
                 Err(SP1CoreProverError::HealthCheckFailed)
             }
             future_result = future => {
+                stop_flag.store(true, Ordering::Relaxed);
                 Ok(future_result.unwrap())
             }
         }
