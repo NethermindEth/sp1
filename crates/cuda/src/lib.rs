@@ -31,6 +31,9 @@ pub mod proto {
     pub mod api;
 }
 
+const MOONGATE_SERVER_HEALTHCHECK_ERROR_STR: &str = r#"OutOfMemory("out of memory")"#;
+const MOONGATE_SERVER_HEALTHCHECK_TIMEOUT_SEC: u64 = 60 * 5; // 5 minutes
+
 /// A remote client to [sp1_prover::SP1Prover] that runs inside a container.
 ///
 /// This is currently used to provide experimental support for GPU hardware acceleration.
@@ -238,6 +241,73 @@ impl SP1CudaProver {
         })
     }
 
+    /// Checks the health of the Moongate server container.
+    /// Currently, it checks only the logs for the "OutOfMemory" error.
+    fn moongate_container_healthcheck(
+        moongate_container_name: Option<String>,
+    ) -> Result<bool, Box<dyn StdError>> {
+        let time_before = Instant::now();
+        if let Some(container_name) = &moongate_container_name {
+            let command = Command::new("docker")
+                .args(["logs", container_name])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()?;
+
+            let stderr = String::from_utf8_lossy(&command.stderr);
+            let stdout = String::from_utf8_lossy(&command.stdout);
+
+            if stderr.contains(MOONGATE_SERVER_HEALTHCHECK_ERROR_STR) ||
+                stdout.contains(MOONGATE_SERVER_HEALTHCHECK_ERROR_STR)
+            {
+                tracing::warn!("Moongate server is out of memory");
+                return Ok(false);
+            }
+        }
+        let time_spent = time_before.elapsed();
+        tracing::debug!("Moongate server healthcheck took: {} seconds", time_spent.as_secs());
+        Ok(true)
+    }
+
+    /// Runs a healthcheck on the Moongate server container and executes the given future.
+    async fn run_with_healthcheck<F, R>(
+        future: F,
+        container_name: Option<String>,
+    ) -> Result<R, SP1CoreProverError>
+    where
+        F: Future<Output = Result<R, twirp::ClientError>> + Send,
+        R: Send,
+    {
+        let health_check_task = tokio::spawn(async move {
+            loop {
+                match Self::moongate_container_healthcheck(container_name.clone()) {
+                    Ok(true) => {
+                        // Health is good, continue checking
+                    }
+                    Ok(false) => {
+                        tracing::warn!("Health check failed, stopping execution");
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to check health: {}", e);
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(MOONGATE_SERVER_HEALTHCHECK_TIMEOUT_SEC))
+                    .await;
+            }
+        });
+
+        tokio::select! {
+            _ = health_check_task => {
+                Err(SP1CoreProverError::HealthCheckFailed)
+            }
+            future_result = future => {
+                Ok(future_result.unwrap())
+            }
+        }
+    }
+
     /// Executes the [sp1_prover::SP1Prover::setup] method inside the container.
     pub fn setup(&self, elf: &[u8]) -> Result<(SP1ProvingKey, SP1VerifyingKey), Box<dyn StdError>> {
         let payload = SetupRequestPayload { elf: elf.to_vec() };
@@ -255,7 +325,14 @@ impl SP1CudaProver {
         let payload = ProveCoreRequestPayload { stdin: stdin.clone() };
         let request =
             crate::proto::api::ProveCoreRequest { data: bincode::serialize(&payload).unwrap() };
-        let response = block_on(async { self.client.prove_core(request).await }).unwrap();
+
+        let container_name =
+            self.managed_container.as_ref().map(|container| container.name.clone());
+
+        let response = block_on(async {
+            Self::run_with_healthcheck(self.client.prove_core(request), container_name).await
+        })?;
+
         let proof: SP1CoreProof = bincode::deserialize(&response.result).unwrap();
         Ok(proof)
     }
